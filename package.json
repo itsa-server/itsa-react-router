@@ -28,7 +28,9 @@
     "history": "^1.12.5",
     "itsa-client-controller": "^1.0.0",
     "itsa-event": "^1.0.4",
-    "itsa-io": "^1.0.1"
+    "itsa-io": "^1.0.1",
+    "js-ext": "itsa/js-ext",
+    "object-assign": "^4.0.1"
   },
   "devDependencies": {
     "chai": "^1.9.1",
