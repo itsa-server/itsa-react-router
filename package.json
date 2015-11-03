@@ -1,6 +1,6 @@
 {
   "name": "itsa-react-router",
-  "version": "1.0.0",
+  "version": "1.0.4",
   "description": "itsa-react-router",
   "author": [
     {
@@ -25,11 +25,11 @@
     "node": "*"
   },
   "dependencies": {
+    "itsa-classes": "^1.0.2",
     "history": "^1.12.5",
-    "itsa-client-controller": "^1.0.0",
+    "itsa-client-controller": "^1.0.2",
     "itsa-event": "^1.0.4",
     "itsa-io": "^1.0.1",
-    "js-ext": "itsa/js-ext",
     "object-assign": "^4.0.1"
   },
   "devDependencies": {
