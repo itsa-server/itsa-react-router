@@ -144,8 +144,8 @@ var Router = Classes.createClass(function(routes) {
                 function(responseArray) {
                     var BodyComponent = responseArray[0],
                         css = responseArray[1],
-                        props = responseArray[2];
-
+                        props = responseArray[2],
+                        langSwitch = (controller.getLang()!==lang);
                     controller.setPage({
                         view: view,
                         BodyComponent: BodyComponent,
@@ -156,7 +156,7 @@ var Router = Classes.createClass(function(routes) {
                         componentId: componentId,
                         requireId: requireId,
                         lang: lang
-                    }).then(function() {instance.emit('pagechanged');});
+                    }).then(function() {instance.emit('pagechanged', {langSwitch: langSwitch});});
 
                     if (!staticView) {
                         // make sure the props are reloaded again:
@@ -233,7 +233,8 @@ var Router = Classes.createClass(function(routes) {
             e.clickEvent.preventDefault();
         },
 
-        _defFnPageChanged: function() {
+        _defFnPageChanged: function(e) {
+            e.langSwitch || WINDOW.scrollTo(0, 0);
             if (WINDOW.ga) {
                 WINDOW.ga('set', 'page', WINDOW.location.href);
                 WINDOW.ga('send', 'pageview');
