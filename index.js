@@ -19,7 +19,7 @@ var isNode = (typeof global!=='undefined') && ({}.toString.call(global)==='[obje
       controller = require('itsa-client-controller'),
       io = require('itsa-io'),
       Event = require('itsa-event'),
-      REGEXP_PLACEHOLDER = new RegExp('{(.)+}', 'gi'),
+      REGEXP_PLACEHOLDER = new RegExp('{((?!}).)+}', 'gi'),
       webpackRequire = __webpack_require__,
       Classes = require('itsa-classes');
 
