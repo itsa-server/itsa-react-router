@@ -25,6 +25,7 @@ var isNode = (typeof global!=='undefined') && ({}.toString.call(global)==='[obje
 
 var Router = Classes.createClass(function(routes) {
         var instance = this;
+        controller.init();
         instance.routes = routes || controller.getProps().__routes;
         instance.viewComponents = {};
         instance.clickCb = instance.clickCb.bind(instance);
