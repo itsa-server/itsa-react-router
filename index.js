@@ -1,15 +1,23 @@
-/*global __webpack_require__*/
+/* global __webpack_require__ */
+/* eslint no-empty: 0 */
 
 'use strict';
 
-var isNode = (typeof global!=='undefined') && ({}.toString.call(global)==='[object global]') && (!global.document || ({}.toString.call(global.document)!=='[object HTMLDocument]')),
+require('itsa-dom');
+require('itsa-jsext/lib/object');
+
+var isNode = require('itsa-utils').isNode,
       NOOP = function() {},
       WINDOW = isNode ? {
            document: {
                addEventListener: NOOP,
                removeEventListener: NOOP,
                location: {}
-           }
+           },
+           pageXOffset: 0,
+           pageYOffset: 0,
+           innerWidth: 0,
+           innerHeight: 0
       } : window,
       DOCUMENT = WINDOW.document,
       documentElement = DOCUMENT.documentElement,
@@ -17,14 +25,48 @@ var isNode = (typeof global!=='undefined') && ({}.toString.call(global)==='[obje
       objectAssign = require('object-assign'),
       createHistory = require('history').createHistory,
       controller = require('itsa-client-controller'),
-      io = require('itsa-io'),
+      io = require('itsa-fetch').io,
       Event = require('itsa-event'),
       REGEXP_PLACEHOLDER = new RegExp('{((?!}).)+}', 'gi'),
       webpackRequire = __webpack_require__,
-      Classes = require('itsa-classes');
+      Classes = require('itsa-classes'),
+      extractPath, parsePath;
+
+extractPath = function(string) {
+    var match = string.match(/^https?:\/\/[^\/]*/);
+    if (match === null) {
+        return string;
+    }
+    return string.substring(match[0].length);
+};
+
+parsePath = function(path) {
+    var pathname = extractPath(path),
+        search = '',
+        hash = '',
+        hashIndex = pathname.indexOf('#'),
+        searchIndex;
+
+    if (hashIndex !== -1) {
+        hash = pathname.substring(hashIndex);
+        pathname = pathname.substring(0, hashIndex);
+    }
+    searchIndex = pathname.indexOf('?');
+    if (searchIndex !== -1) {
+        search = pathname.substring(searchIndex);
+        pathname = pathname.substring(0, searchIndex);
+    }
+    (pathname==='') && (pathname = '/');
+    return {
+        pathname: pathname,
+        search: search,
+        hash: hash
+    };
+};
 
 var Router = Classes.createClass(function(routes) {
         var instance = this;
+        instance._scrollAnchorTime = 0;
         controller.init();
         instance.routes = routes || controller.getProps().__routes;
         instance.viewComponents = {};
@@ -34,7 +76,12 @@ var Router = Classes.createClass(function(routes) {
         instance.setupEvent();
         instance.setupListeners();
         // make sure any instance._viewCompIO gets aborted:
-        WINDOW.addEventListener('unload', instance.destroy);
+        if (WINDOW.addEventListener) {
+            WINDOW.addEventListener('unload', instance.destroy);
+        }
+        else {
+            WINDOW.attachEvent('onunload', instance.destroy);
+        }
     },
     {
 
@@ -42,6 +89,9 @@ var Router = Classes.createClass(function(routes) {
          *
         **/
         getAnchor: function(node) {
+            if (!node) {
+                return false;
+            }
             if (node===BODY) {
                 // also no need to go higher in the domtree
                 return false;
@@ -59,7 +109,8 @@ var Router = Classes.createClass(function(routes) {
          *
         **/
         loadView: function(location) {
-            var state = location.state,
+            var instance = this,
+                state = location.state,
                 view = state.view,
                 title = state.title,
                 staticView = state.staticView,
@@ -71,13 +122,7 @@ var Router = Classes.createClass(function(routes) {
                 origin = WINDOW.location.origin,
                 viewObject, keys;
 
-            var instance = this;
-            // the first time will be initiated by the current page.
-            // we don't need to load and render this view
-            if (!instance.loadViewInitiated) {
-                instance.loadViewInitiated = true;
-                return;
-            }
+            instance.lastLocation = location.itsa_deepClone(); // for usage when valling `reload`
 
             // first: currently loading another io-promise: then abort!
             // this way we prevent delay
@@ -103,23 +148,20 @@ var Router = Classes.createClass(function(routes) {
                 viewObject.ioComponentPromise = instance._viewCompIO.then(
                     function(data) {
                         var BodyComponent;
+                        // save the requireId that we want to load
+                        // only if the server decides to redirect to another view,
+                        // then during evaluating `data`, it will be reset to another requireId;
+                        WINDOW.itsa_requireId = requireId;
                         eval(data);
-                        BodyComponent = webpackRequire(requireId);
+                        BodyComponent = webpackRequire(WINDOW.itsa_requireId);
                         return BodyComponent;
                     }
-                ).catch(function(err) {
-                    console.warn(err);
-                    delete viewObject.ioComponentPromise;
-                });
+                );
             }
 
             if (!viewObject.ioCssPromise) {
                 instance._viewCssIO = io.get(origin+pathname, {headers: {'x-css': true}});
                 viewObject.ioCssPromise = instance._viewCssIO
-                .catch(function(err) {
-                    console.warn(err);
-                    delete viewObject.ioCssPromise;
-                });
             }
 
             if (controller.getLang()!==lang) {
@@ -130,13 +172,9 @@ var Router = Classes.createClass(function(routes) {
             if (!viewObject.ioPropsPromise) {
                 instance._viewPropIO = io.read(origin+pathname+search, null, {headers: {'x-props': true, 'x-lang': lang}, preventCache: !staticView});
                 viewObject.ioPropsPromise = instance._viewPropIO
-                .catch(function(err) {
-                    console.warn(err);
-                    delete viewObject.ioPropsPromise;
-                });
             }
 
-            Promise.all([
+            return Promise.all([
                 viewObject.ioComponentPromise,
                 viewObject.ioCssPromise,
                 viewObject.ioPropsPromise
@@ -146,8 +184,13 @@ var Router = Classes.createClass(function(routes) {
                     var BodyComponent = responseArray[0],
                         css = responseArray[1],
                         props = responseArray[2],
-                        langSwitch = (controller.getLang()!==lang);
-                    controller.setPage({
+                        langSwitch = (controller.getLang()!==lang),
+                        sameView = (view===controller.getView());
+                    if (!staticView) {
+                        // make sure the props are reloaded again:
+                        delete viewObject.ioPropsPromise;
+                    }
+                    return controller.setPage({
                         view: view,
                         BodyComponent: BodyComponent,
                         title: title,
@@ -157,12 +200,9 @@ var Router = Classes.createClass(function(routes) {
                         componentId: componentId,
                         requireId: requireId,
                         lang: lang
-                    }).then(function() {instance.emit('pagechanged', {langSwitch: langSwitch});});
-
-                    if (!staticView) {
-                        // make sure the props are reloaded again:
-                        delete viewObject.ioPropsPromise;
-                    }
+                    }).then(function() {
+                        sameView || instance.emit('pagechanged', {langSwitch: langSwitch});
+                    });
                 },
                 function() {
                     delete viewObject.ioComponentPromise;
@@ -177,8 +217,9 @@ var Router = Classes.createClass(function(routes) {
          *
         **/
         getRouteFromAnchor: function(href, switchLang) {
-            var view, staticView, title, questionmark, staticURI, requireId, componentId,
-            lang, langFromURI, secondSlash, possibleLang;
+            var controllerProps = controller.getProps(),
+                view, staticView, title, questionmark, staticURI, requireId, componentId,
+            lang, langFromURI, secondSlash, possibleLang, hashPos, hash;
             questionmark = href.indexOf('\?');
             staticURI = (questionmark===-1);
             staticURI || (href=href.substr(0, questionmark));
@@ -187,7 +228,7 @@ var Router = Classes.createClass(function(routes) {
 
             if ((secondSlash!==-1) && (href[0]==='/')) {
                 // possible language in the uri
-                var validLanguages = controller.getProps().__languages; // is an object
+                var validLanguages = controllerProps.__languages; // is an object
                 possibleLang = href.substr(1, secondSlash-1);
                 if (validLanguages[possibleLang]) {
                     // yes it is a language
@@ -195,8 +236,15 @@ var Router = Classes.createClass(function(routes) {
                     href = href.substr(secondSlash);
                 }
             }
+            // check for hashtags:
+            hashPos = href.indexOf('#');
+            if (hashPos!==-1) {
+                hash = href.substr(hashPos+1);
+                href = href.substr(0, hashPos);
+            }
+            href || (href=WINDOW.location.pathname);
             this.routes.some(function(route) {
-                var path = '^'+route.path.replace(REGEXP_PLACEHOLDER, '((?!\/).)+')+'$',
+                var path = '^'+route.path.replace(REGEXP_PLACEHOLDER, '((?!\/).)+')+'\/?$',
                     reg = new RegExp(path);
                 if (reg.test(href)) {
                     view = route.view;
@@ -205,33 +253,67 @@ var Router = Classes.createClass(function(routes) {
                 }
                 return view;
             });
-            controller.getProps().__routes.some(function(route) {
+            controllerProps.__routes.some(function(route) {
                 if (route.view===view) {
                     requireId = route.requireId;
                     componentId = route.componentId;
                 }
                 return componentId;
             });
-            lang = (switchLang && switchLang.toLowerCase()) || langFromURI || controller.getProps().__lang;
+            lang = (switchLang && switchLang.toLowerCase()) || langFromURI || controllerProps.__lang;
             return {
                 view: view,
                 staticView: staticView,
                 title: (title && title[lang]) || '',
                 requireId: requireId,
                 componentId: componentId,
-                lang: lang
+                lang: lang,
+                langPrefix: !langFromURI && controllerProps.__langprefix,
+                hash: hash
             };
         },
 
         _defFnNavigate: function(e) {
-            var route = e.route;
-            e.clickEvent.preventDefault();
-            this.history.pushState({ view: route.view, title: route.title, staticView: route.staticView, componentId: route.componentId, requireId: route.requireId, lang: route.lang }, e.href);
+            var route = e.route,
+                href = e.href,
+                hash = (route.hash ? '#'+route.hash : ''),
+                hashPos, pathSplit;
+            e.clickEvent && e.clickEvent.preventDefault();
+            // Set langprefix:
+            if (href.itsa_startsWith('/') && route.langPrefix) {
+                href = route.langPrefix + href;
+            }
+            // check for hashtags:
+            hashPos = href.indexOf('#');
+            if (hashPos!==-1) {
+                href = href.substr(0, hashPos);
+            }
+            href || (href=WINDOW.location.pathname);
+            e.prevView = controller.getView();
+            e.pageChanged = (e.prevView!==route.view);
+
+            pathSplit = parsePath(href+hash);
+
+            this.history.push({
+                pathname: pathSplit.pathname,
+                search: pathSplit.search,
+                hash: pathSplit.hash,
+                state: {
+                    path: e.href, // need to be set: to check for changes when using the same view
+                    view: route.view,
+                    title: route.title,
+                    staticView: route.staticView,
+                    componentId: route.componentId,
+                    requireId: route.requireId,
+                    lang: route.lang,
+                    hash: route.hash
+                }
+            });
         },
 
         _prevFnNavigate: function(e) {
             // also prevent native clicking
-            e.clickEvent.preventDefault();
+            e.clickEvent && e.clickEvent.preventDefault();
         },
 
         _defFnPageChanged: function(e) {
@@ -262,8 +344,6 @@ var Router = Classes.createClass(function(routes) {
                             route: route,
                             href: href
                         });
-                        // depending of the type, either preventdefault anchor-action
-                        // or load the view
                     }
                 }
             }
@@ -277,8 +357,76 @@ var Router = Classes.createClass(function(routes) {
             return (WINDOW.history && WINDOW.history.pushState);
         },
 
+        gotoUrl: function(url, clearCache) {
+            var instance = this,
+                route;
+            if (!instance.isBrowserWithHistory()) {
+                WINDOW.location = url;
+            }
+            else {
+                clearCache && instance.clearViewCache();
+                route = instance.getRouteFromAnchor(url);
+                if (route.view) {
+                    instance.emit('navigate', {
+                        route: route,
+                        href: url,
+                        manual: true
+                    });
+                }
+            }
+        },
+
+        reloadView: function(clearCache) {
+            var instance = this,
+                location;
+            clearCache && instance.clearViewCache();
+            location = (instance.lastLocation || instance.initialLocation).itsa_deepClone();
+            location.state = instance.getRouteFromAnchor(location.pathname);
+            instance.loadView(location);
+        },
+
+        reloadInitialView: function(clearCache) {
+            var instance = this;
+            clearCache && instance.clearViewCache();
+            instance.loadView(instance.initialLocation);
+        },
+
+        clearViewCache: function() {
+            this.viewComponents = {};
+        },
+
         registerViewComponent: function(view, viewObject) {
             this.viewComponents[view] = viewObject;
+        },
+
+        saveHistoryHash: function(hash) {
+            this._saveHistoryHash(hash, true);
+        },
+
+        _saveHistoryHash: function(hash, historyPush) {
+            var instance = this,
+                href = href=WINDOW.location.pathname,
+                route;
+            if (hash) {
+                (hash[0]==='#') || (hash='#'+hash);
+                href += hash;
+            }
+            route = instance.getRouteFromAnchor(href);
+            if (route.view) {
+                instance.emit && instance.emit('navigate', {
+                    route: route,
+                    href: href,
+                    historyPush: historyPush
+                });
+            }
+        },
+
+        scrollToNode: function(node) {
+            node.itsa_scrollIntoView(true, true, this._scrollAnchorTime);
+        },
+
+        setScrollAnchorTime: function(value) {
+            this._scrollAnchorTime = value || 0;
         },
 
         /*
@@ -288,7 +436,7 @@ var Router = Classes.createClass(function(routes) {
             var history, search, staticView, componentInfo, cssProps;
             var instance = this;
             if (instance.isBrowserWithHistory()) {
-                instance.history = history =createHistory();
+                instance.history = history = createHistory();
                 // because the initial state has no `state`-property, we will define it ourselves:
                 search = WINDOW.location.search;
                 staticView = (search!=='') ? false : controller.isStaticView();
@@ -296,6 +444,7 @@ var Router = Classes.createClass(function(routes) {
                     pathname: WINDOW.location.pathname,
                     search: search,
                     state: {
+                        path: WINDOW.location, // need to be set: to check for changes when using the same view
                         title: controller.getTitle(),
                         view: controller.getView(),
                         componentId: controller.getComponentId(),
@@ -317,7 +466,16 @@ var Router = Classes.createClass(function(routes) {
                 instance.registerViewComponent(controller.getView(), componentInfo);
 
                 instance.unlistenHistory = history.listen(function(location) {
-                    instance.loadView(location.state ? location : instance.initialLocation);
+                    var hashNode;
+                    location.state || (location = instance.initialLocation);
+                    if (location.state && (location.state.view===controller.getView()) && (location.state.path===WINDOW.location) && (location.state.lang==controller.getLang())) {
+                        hashNode = location.hash && DOCUMENT.getElementById(location.hash.substr(1));
+                        hashNode && instance.scrollToNode(hashNode);
+                        instance._saveHistoryHash(location.hash); // fire event without save history
+                    }
+                    else {
+                        instance.loadView(location);
+                    }
                 });
             }
         },
@@ -325,7 +483,7 @@ var Router = Classes.createClass(function(routes) {
         setupEvent: function() {
             var instance = this;
             var emitter = new Event.Emitter('router');
-            objectAssign(instance, emitter);
+            instance.itsa_merge(emitter, {force: 'deep'});
             instance.defineEvent('navigate')
                      .defaultFn(instance._defFnNavigate)
                      .preventedFn(instance._prevFnNavigate);
